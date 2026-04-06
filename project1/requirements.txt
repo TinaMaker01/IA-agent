@@ -4,4 +4,3 @@ langchain-core
 langchain-openai
 langchain-community
 chromadb
-python 库
