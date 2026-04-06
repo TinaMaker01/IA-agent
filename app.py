@@ -94,7 +94,7 @@ def search_knowledge(query:str) -> str:
 llm = ChatOpenAI(
     model="qwen-max",
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    # api_key=os.environ.get("DASHSCOPE_API_KEY"),  # 从环境变量读取
+    api_key=os.environ.get("DASHSCOPE_API_KEY"),  # 从环境变量读取
     temperature=0
 )
 
