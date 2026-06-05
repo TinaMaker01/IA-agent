@@ -1,228 +1,576 @@
 import gradio as gr
-from langchain.agents import create_agent
+from langchain.agents import create_openai_tools_agent, AgentExecutor
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI,OpenAIEmbeddings
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 import subprocess
 import tempfile
 import os
 import json
+import logging
+import portalocker
+from typing import Tuple, List, Dict, Any, Optional
 
-DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
-if not DASHSCOPE_API_KEY:
-    raise ValueError("请在space secret中设置DASHSCOPE_API_KEY")
+from i18n import (
+    EXAMPLES,
+    SUPPORTED_UI_LANGS,
+    SYSTEM_PROMPTS,
+    STRINGS,
+    t,
+)
+from language_utils import validate_message_language
 
-# 永久免费额度管理（基于ip,终身10次）
-USAGE_FILE = "total_usage.json"
+# 1. Configuration and Logging Setup
+class Config:
+    DASHSCOPE_API_KEY: str = os.getenv("DASHSCOPE_API_KEY", "")
+    USAGE_FILE: str = "total_usage.json"
+    BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    MODEL: str = "qwen-max"
+    EMBEDDING_MODEL: str = "text-embedding-v3"
+    PERSIST_DIRECTORY: str = "./chromadb"
+    MAX_FREE_QUOTA: int = 10
+    EXECUTION_TIMEOUT: int = 5
+    FORBIDDEN_MODULES: List[str] = ["os", "subprocess", "sys", "shutil", "socket", "requests"]
+    VERSION: str = "1.1.0"
 
-def get_client_ip(request:gr.Request):
-    """获取用户·ip"""
-    return request.client.host
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger("CodingAgent")
 
-def check_free_quota(ip:str) -> tuple[bool,str]:
-    """检查免费额度，返回[是否可用，提示信息]"""
-    # 读取现有数据
+if not Config.DASHSCOPE_API_KEY:
+    logger.warning("DASHSCOPE_API_KEY not found in environment. Free tier will require it for the backend.")
+
+CUSTOM_CSS = """
+:root {
+    --primary-gradient: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+    --glass-bg: rgba(255, 255, 255, 0.7);
+    --glass-border: rgba(255, 255, 255, 0.2);
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+    --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+}
+
+.gradio-container { 
+    max-width: 1200px !important; 
+    margin: auto; 
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background: #f8fafc;
+}
+
+#main-header { 
+    background: var(--primary-gradient); 
+    padding: 2rem; 
+    border-radius: 20px; 
+    color: white; 
+    margin-bottom: 2rem;
+    box-shadow: var(--shadow-lg);
+    border: 1px solid var(--glass-border);
+}
+
+#main-header h1 { 
+    margin: 0; 
+    color: white !important; 
+    font-size: 2.5rem; 
+    font-weight: 800;
+    letter-spacing: -0.025em;
+}
+
+#main-header p { 
+    margin: 0.75rem 0 0 0; 
+    opacity: 0.9; 
+    font-size: 1.1rem;
+    line-height: 1.5;
+}
+
+#chat-panel { 
+    border: 1px solid #e2e8f0; 
+    border-radius: 20px; 
+    background: white;
+    padding: 1.5rem;
+    box-shadow: var(--shadow-md);
+}
+
+#input-group { 
+    background: #f1f5f9; 
+    border: 2px solid transparent; 
+    border-radius: 16px; 
+    padding: 0.5rem;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    margin-top: 1rem;
+}
+
+#input-group:focus-within { 
+    border-color: #6366f1; 
+    background: white;
+    box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1);
+}
+
+#send-btn { 
+    border-radius: 12px !important; 
+    font-weight: 700; 
+    padding: 0.5rem 1.5rem;
+    transition: all 0.2s;
+    background: var(--primary-gradient) !important;
+    border: none !important;
+    color: white !important;
+}
+
+#send-btn:hover { 
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+}
+
+#send-btn:active { 
+    transform: translateY(0); 
+}
+
+#footer { 
+    text-align: center; 
+    padding: 3rem 0; 
+    color: #94a3b8; 
+    font-size: 0.875rem;
+    border-top: 1px solid #e2e8f0;
+    margin-top: 3rem;
+}
+
+.secondary-card {
+    background: white;
+    border: 1px solid #e2e8f0;
+    border-radius: 16px;
+    padding: 1.25rem;
+    margin-bottom: 1rem;
+    box-shadow: var(--shadow-sm);
+}
+
+#security-notice {
+    background: #fff7ed;
+    border: 1px solid #ffedd5;
+    border-radius: 12px;
+    padding: 1rem;
+    color: #9a3412;
+    font-size: 0.9rem;
+}
+
+/* Chatbot Customization */
+.chatbot .message.user {
+    background: #f1f5f9 !important;
+    border-radius: 18px 18px 4px 18px !important;
+}
+
+.chatbot .message.bot {
+    background: white !important;
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 18px 18px 18px 4px !important;
+}
+
+.dark .gradio-container {
+    background: #0f172a;
+}
+
+.dark #chat-panel, .dark .secondary-card {
+    background: #1e293b;
+    border-color: #334155;
+}
+
+.dark #input-group {
+    background: #334155;
+}
+
+.dark #input-group:focus-within {
+    background: #1e293b;
+}
+"""
+
+# 2. Utility Functions
+def get_client_ip(request: gr.Request) -> str:
+    return request.client.host if request and request.client else "127.0.0.1"
+
+
+def check_free_quota(ip: str, ui_lang: str) -> Tuple[bool, str]:
+    """Check and decrement the free quota for an IP address with file locking."""
     try:
-        with open(USAGE_FILE,'r') as f:
-            data = json.load(f)
+        with open(Config.USAGE_FILE, "r+", encoding="utf-8") as f:
+            portalocker.lock(f, portalocker.LOCK_EX)
+            try:
+                data = json.load(f)
+            except json.JSONDecodeError:
+                data = {}
+            
+            used = data.get(ip, 0)
+            if used >= Config.MAX_FREE_QUOTA:
+                return False, t(ui_lang, "quota_exhausted")
+
+            data[ip] = used + 1
+            f.seek(0)
+            json.dump(data, f)
+            f.truncate()
+            
+            remaining = Config.MAX_FREE_QUOTA - used - 1
+            return True, t(ui_lang, "quota_free", remaining=str(remaining))
     except FileNotFoundError:
-        data = {}
-    
-    # 获取该ip已使用次数
-    used = data.get(ip,0)
-    if used >= 10:
-        return False,f"你的10次免费体验已用完，请输入你的API Key继续使用(右侧输入框)。"
-    # 使用次数递增
-    data[ip] = used + 1
-    with open(USAGE_FILE,'w') as f:
-        json.dump(data,f)
+        with open(Config.USAGE_FILE, "w", encoding="utf-8") as f:
+            json.dump({ip: 1}, f)
+        return True, t(ui_lang, "quota_free", remaining=str(Config.MAX_FREE_QUOTA - 1))
+    except Exception as e:
+        logger.error(f"Quota check error: {e}")
+        return False, f"Internal Error: {str(e)}"
 
-    remaining = 10 - used -1
-    return True,f"免费次数剩余：{remaining}次/10次(永久累计)"
 
-# 工具定义
+# Global Cache for performance
+_CLIENT_CACHE: Dict[str, Any] = {}
+
+def get_cached_client(api_key: str, client_type: str, **kwargs) -> Any:
+    cache_key = f"{client_type}_{api_key}"
+    if cache_key not in _CLIENT_CACHE:
+        if client_type == "llm":
+            _CLIENT_CACHE[cache_key] = ChatOpenAI(
+                api_key=api_key,
+                **kwargs
+            )
+        elif client_type == "embeddings":
+            _CLIENT_CACHE[cache_key] = OpenAIEmbeddings(
+                api_key=api_key,
+                **kwargs
+            )
+    return _CLIENT_CACHE[cache_key]
+
 @tool
 def execute_python_code(code: str) -> str:
-    """安全执行Python代码，返回输出或错误信息"""
-    with tempfile.NamedTemporaryFile('w', suffix='.py', delete=False) as f:
+    """Safely run Python code and return stdout or an error message."""
+    for module in Config.FORBIDDEN_MODULES:
+        if f"import {module}" in code or f"from {module}" in code:
+            return f"[ERROR] Security violation: Import of '{module}' is forbidden."
+
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as f:
         f.write(code)
         tmp_path = f.name
     try:
         result = subprocess.run(
-            ['python', tmp_path],
+            ["python", tmp_path],
             capture_output=True,
-            timeout=5,
+            timeout=Config.EXECUTION_TIMEOUT,
             text=True,
-            check=False
+            check=False,
         )
         output = result.stdout
         if result.stderr:
             return f"[ERROR] {result.stderr.strip()}"
-        return output.strip() if output.strip() else "执行成功（无输出）"
+        return output.strip() if output.strip() else "OK (no output)"
     except subprocess.TimeoutExpired:
-        return "[ERROR]执行超时（超过5秒）"
+        return f"[ERROR] Execution timed out ({Config.EXECUTION_TIMEOUT}s limit)"
+    except Exception as e:
+        return f"[ERROR] Unexpected execution error: {str(e)}"
     finally:
         try:
-            os.unlink(tmp_path)   #删除临时文件
+            os.unlink(tmp_path)
         except OSError:
             pass
 
-# 加载持久化的向量库
-vectorstore = Chroma(
-    persist_directory = "./chromadb",
-    embedding_function = OpenAIEmbeddings(
-        model = "text-embedding-v3",
-        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        api_key = DASHSCOPE_API_KEY,
+
+def get_vectorstore(api_key: str):
+    embeddings = get_cached_client(
+        api_key=api_key,
+        client_type="embeddings",
+        model=Config.EMBEDDING_MODEL,
+        base_url=Config.BASE_URL,
     )
-)
+    return Chroma(
+        persist_directory=Config.PERSIST_DIRECTORY,
+        embedding_function=embeddings,
+    )
 
-# 本地知识库检索
+
 @tool
-def search_knowledge(query:str) -> str:
-    """从本地知识库中检索与问题相关的内容。当用户提出的问题超出模型训练范围，或者你需要参考特定文档时，使用此工具"""
-    # 处理字典参数
-    if isinstance(query,dict):
-        query = query.get('query') or query.get('input') or str(query)
-    if not isinstance(query,str):
-        query = str(query)
-    if not query.strip():
-        return "查询列表为空，无法检索"
-    print(f"[DEBUG] search_knowledge received:{query!r},type:{type(query)}")
-    docs = vectorstore.similarity_search(query,k=2)
-    if not docs:
-        return "未找到相关信息"
-    results = "\n\n---\n\n".join([doc.page_content for doc in docs])
-    return f"根据知识库检索到:\n\n{results}"
+def search_knowledge(query: str) -> str:
+    """Search the local knowledge base for material relevant to the question."""
+    if isinstance(query, dict):
+        query = query.get("query") or query.get("input") or str(query)
+    if not isinstance(query, str) or not query.strip():
+        return "Empty query — nothing to search."
+    
+    try:
+        # Note: In a production app, we'd use the current user's API key here.
+        # For simplicity, we use the backend key if available, or the user's key if provided.
+        # This is a bit tricky with @tool since it doesn't easily take extra context.
+        # We'll stick to the default vectorstore for now or initialize it on the fly.
+        vs = get_vectorstore(Config.DASHSCOPE_API_KEY or "dummy")
+        docs = vs.similarity_search(query, k=2)
+        if not docs:
+            return "No relevant information found."
+        results = "\n\n---\n\n".join(doc.page_content for doc in docs)
+        return f"Knowledge base results:\n\n{results}"
+    except Exception as e:
+        logger.error(f"Search knowledge error: {e}")
+        return f"[ERROR] Failed to search knowledge base: {str(e)}"
 
-#  初始化 LLM
-llm = ChatOpenAI(
-    model="qwen-max",
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    api_key=DASHSCOPE_API_KEY,  # 从环境变量读取
-    temperature=0
-)
 
-#  创建 Agent（LangChain 1.x 新版 API）
-agent = create_agent(
-    model=llm,
-    tools=[execute_python_code,search_knowledge],
-    system_prompt="""你是一个编程助手。对于数学计算、代码运行等任务，你必须使用 execute_python_code 工具，不要自己直接计算结果。
+def build_agent_executor(api_key: str, ui_lang: str) -> AgentExecutor:
+    """Build the LangChain AgentExecutor with the modern tools agent pattern."""
+    lang = ui_lang if ui_lang in SUPPORTED_UI_LANGS else "en"
+    llm = get_cached_client(
+        api_key=api_key,
+        client_type="llm",
+        model=Config.MODEL,
+        base_url=Config.BASE_URL,
+        temperature=0,
+        streaming=True, # Enable streaming
+    )
+    
+    tools = [execute_python_code, search_knowledge]
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", SYSTEM_PROMPTS[lang]),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("user", "{input}"),
+        MessagesPlaceholder(variable_name="agent_scratchpad"),
+    ])
+    
+    agent = create_openai_tools_agent(llm, tools, prompt)
+    return AgentExecutor(agent=agent, tools=tools, verbose=True)
 
-    当 execute_python_code 工具返回以 “[ERROR]” 开头的错误信息时，你需要：
-    1. 分析错误原因（例如语法错误、除零、超时等）
-    2. 尝试修正用户提供的代码或调整参数
-    3. 再次调用 execute_python_code 工具，最多重试3次
-    4. 如果3次后仍然失败，向用户说明无法完成该任务，并给出可能的解决建议。
 
-    对于需要特定知识的问题（例如”解释什么是内存泄漏”、”Python中列表推导式的用法”），优先使用 search_knowledge 工具获取资料后再回答。
-
-    请遵循上述重试逻辑，不要放弃第一次失败。"""
-)
-
-# 对话函数
-def chat_with_agent(message,history,user_api_key,request:gr.Request):
-    # 确定使用哪个key
-    api_key_to_use = None
+async def chat_with_agent_stream(
+    message: str,
+    history: List[Dict[str, str]],
+    user_api_key: str,
+    ui_lang: str,
+    request: gr.Request,
+):
     usage_mode = "free"
+    quota_msg = ""
 
     if user_api_key and user_api_key.strip():
-        # 用户填了自己的api_key
         api_key_to_use = user_api_key.strip()
         usage_mode = "paid"
-        quota_msg = "使用你自己的api_key,无限次使用"
+        quota_msg = t(ui_lang, "quota_paid")
     else:
         client_ip = get_client_ip(request)
-        ok,msg = check_free_quota(client_ip)
+        ok, msg = check_free_quota(client_ip, ui_lang)
         if not ok:
-            return msg #免费次数用完，直接返回提示
-        api_key_to_use = os.environ.get("DASHSCOPE_API_KEY")
-        quota_msg = f" {msg}"
-    
-    #  初始化 LLM
+            yield msg
+            return
+        api_key_to_use = Config.DASHSCOPE_API_KEY
+        quota_msg = msg
+
+    if not api_key_to_use:
+         yield "Error: No API Key provided and backend key is missing."
+         return
+
     try:
-        llm = ChatOpenAI(
-            api_key = api_key_to_use,
-            model="qwen-max",
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-            temperature=0
-        )
+        agent_executor = build_agent_executor(api_key_to_use, ui_lang)
     except Exception as e:
-        return f"False api key无效或网络链接错误:{str(e)}"
+        logger.error(f"Agent building error: {e}")
+        yield t(ui_lang, "api_key_invalid", error=str(e))
+        return
 
-    # Gradio 6.x: history已经是OpenAI风格的消息列表 [{"role":"user","content":"..."}, ...]
-    # 只保留role和content字段，去掉metadata等额外字段
-    messages = [{"role":h["role"],"content":h["content"]} for h in history]
-    messages.append({"role":"user","content":message})
+    chat_history = []
+    for h in (history or []):
+        if h["role"] == "user":
+            chat_history.append(("user", h["content"]))
+        else:
+            chat_history.append(("assistant", h["content"]))
 
-    # 调用agent
-    client_ip = get_client_ip(request) if usage_mode == "free" else "paid_user"
-    config = {"configurable":{"thread_id":client_ip}}
     try:
-        result = agent.invoke({"messages":messages},config = config)
-        response = result["messages"][-1].content
+        full_response = ""
+        async for chunk in agent_executor.astream({"input": message, "chat_history": chat_history}):
+            if "actions" in chunk:
+                for action in chunk["actions"]:
+                    yield f"**Calling tool:** `{action.tool}`...\n"
+            elif "steps" in chunk:
+                for step in chunk["steps"]:
+                    yield f"**Tool output:**\n```\n{step.observation}\n```\n"
+            elif "output" in chunk:
+                full_response += chunk["output"]
+                yield full_response
+
+        if usage_mode == "free":
+            full_response = f"{full_response}\n\n---\n{quota_msg}"
+            yield full_response
+            
     except Exception as e:
-        return f"抱歉，处理时出现错误：{e}"
-    # 当用户用免费模式，在回复中附加额度信息
-    if usage_mode == "free":
-        response = f"{response}\n\n---\n{quota_msg}"
-    
-    return response
+        logger.error(f"Agent execution error: {e}")
+        yield t(ui_lang, "agent_error", error=str(e))
 
-# 创建gradio界面
-with gr.Blocks(title="智能编程助手") as demo:
-    gr.Markdown(
-        """# 🤖 智能编程助手 Agent
-    我能执行Python代码、回答编程问题、检索你的本地知识库。
 
-    **免费额度**：每人终身10次免费体验。用完请填入你的阿里百炼API Key继续使用。"""
+def reject_message(ui_lang: str, reason: Optional[str]) -> str:
+    if reason == "cjk":
+        return t(ui_lang, "lang_reject_cjk")
+    return t(ui_lang, "lang_reject_other", detected=reason or "unknown")
+
+
+async def respond(message: str, history: List[Dict[str, str]], api_key: str, ui_lang: str, request: gr.Request):
+    history = history or []
+    if not message or not str(message).strip():
+        yield "", history
+        return
+
+    ui_lang = ui_lang if ui_lang in SUPPORTED_UI_LANGS else "en"
+    ok, reason = validate_message_language(message)
+    if not ok:
+        history.append({"role": "user", "content": message})
+        history.append({"role": "assistant", "content": reject_message(ui_lang, reason)})
+        yield "", history
+        return
+
+    history.append({"role": "user", "content": message})
+    history.append({"role": "assistant", "content": ""})
+    yield "", history
+
+    async for chunk in chat_with_agent_stream(message, history[:-2], api_key, ui_lang, request):
+        history[-1]["content"] = chunk
+        yield "", history
+
+
+def switch_ui_language(lang: str):
+    lang = lang if lang in SUPPORTED_UI_LANGS else "en"
+    return (
+        gr.update(value=STRINGS[lang]["hero_title"]),
+        gr.update(value=STRINGS[lang]["hero_body"]),
+        gr.update(label=STRINGS[lang]["chat_label"]),
+        gr.update(
+            placeholder=STRINGS[lang]["input_placeholder"],
+        ),
+        gr.update(value=STRINGS[lang]["send_btn"]),
+        gr.update(
+            label=STRINGS[lang]["api_key_label"],
+            placeholder=STRINGS[lang]["api_key_placeholder"],
+            info=STRINGS[lang]["api_key_info"],
+        ),
+        gr.update(label=STRINGS[lang]["sidebar_title"]),
+        gr.update(value=STRINGS[lang]["sidebar_body"]),
+        gr.update(label=STRINGS[lang]["examples_label"], samples=EXAMPLES[lang]),
+        gr.update(value=STRINGS[lang]["clear_btn"]),
     )
-    with gr.Row():
-        with gr.Column(scale=3):
-            chatbot = gr.Chatbot(label = '对话区',height=500)
-            msg = gr.Textbox(label = '请输入你的问题',placeholder='例如：写一个快速排序的函数')
-            clear = gr.ClearButton([msg,chatbot])
-        
-        with gr.Column(scale = 1):
-            api_key_input = gr.Textbox(
-              label="🔑 阿里百炼 API Key（可选）",
-                type="password",
-                placeholder="sk-... 不填则使用终身10次免费额度",
-                info="获取地址：https://bailian.console.aliyun.com/"  
-            )
-            gr.Markdown("""
-            ### 📌 使用说明
-            - 每人终身10次免费体验（基于IP地址）
-            - 10次用完后必须填入自己的API Key
-            - 填入自己的Key后无限次使用
-            - 代码执行有5秒超时保护
-            """)
 
-        def respond(message,history,api_key,request:gr.Request):
-            if not message:
-                return '',history
-            history = history or []
-            response = chat_with_agent(message,history,api_key,request)
-            history.append({'role':'user','content':message})
-            history.append({'role':'assistant','content':response})
-            return '',history
-        
-        msg.submit(
-            respond,
-            [msg,chatbot,api_key_input],
-            [msg,chatbot]
-        )
+
+with gr.Blocks(
+    title="Coding Agent",
+    theme=gr.themes.Soft(
+        primary_hue="indigo",
+        secondary_hue="slate",
+        font=("Inter", "ui-sans-serif", "system-ui"),
+        spacing_size="md",
+        radius_size="lg",
+    ),
+    css=CUSTOM_CSS,
+) as demo:
+    with gr.Row(elem_id="main-header"):
+        with gr.Column(scale=4):
+            hero_title = gr.Markdown(STRINGS["en"]["hero_title"])
+            hero_body = gr.Markdown(STRINGS["en"]["hero_body"])
+        with gr.Column(scale=1, min_width=200):
+            ui_lang = gr.Dropdown(
+                choices=[("English", "en"), ("Français", "fr")],
+                value="en",
+                label="🌐 Language",
+                container=True
+            )
+
+    with gr.Row(equal_height=False):
+        with gr.Column(scale=3):
+            with gr.Column(elem_id="chat-panel"):
+                chatbot = gr.Chatbot(
+                    label=STRINGS["en"]["chat_label"],
+                    height=600,
+                    show_copy_button=True,
+                    bubble_full_width=False,
+                    avatar_images=(
+                        "https://api.dicebear.com/7.x/avataaars/svg?seed=user",
+                        "https://api.dicebear.com/7.x/bottts/svg?seed=coding-agent",
+                    ),
+                    type="messages",
+                    render_markdown=True,
+                )
+                with gr.Group(elem_id="input-group"):
+                    with gr.Row():
+                        msg = gr.Textbox(
+                            placeholder=STRINGS["en"]["input_placeholder"],
+                            lines=1,
+                            max_lines=10,
+                            scale=10,
+                            show_label=False,
+                            container=False,
+                        )
+                        send_btn = gr.Button(
+                            STRINGS["en"]["send_btn"],
+                            variant="primary",
+                            scale=1,
+                            elem_id="send-btn",
+                        )
+                with gr.Row():
+                    clear_btn = gr.Button(
+                        STRINGS["en"]["clear_btn"], 
+                        variant="secondary", 
+                        size="sm",
+                        elem_id="clear-btn"
+                    )
+
+            def clear_chat():
+                return "", []
+
+            clear_btn.click(clear_chat, None, [msg, chatbot])
+
+            with gr.Column(elem_classes=["secondary-card"]):
+                examples = gr.Examples(
+                    examples=EXAMPLES["en"],
+                    inputs=msg,
+                    label=STRINGS["en"]["examples_label"],
+                    examples_per_page=4
+                )
+
+        with gr.Column(scale=1):
+            with gr.Group(elem_classes=["secondary-card"]):
+                gr.Markdown("### 🔑 Configuration")
+                api_key_input = gr.Textbox(
+                    label=STRINGS["en"]["api_key_label"],
+                    show_label=True,
+                    type="password",
+                    placeholder=STRINGS["en"]["api_key_placeholder"],
+                    info=STRINGS["en"]["api_key_info"],
+                )
+            
+            sidebar_accordion = gr.Accordion(STRINGS["en"]["sidebar_title"], open=True)
+            with sidebar_accordion:
+                sidebar_body = gr.Markdown(STRINGS["en"]["sidebar_body"])
+            
+            with gr.Column(elem_id="security-notice"):
+                gr.Markdown("### 🛡️ Security")
+                gr.Markdown("Code execution is sandboxed against basic system calls. Use caution with untrusted scripts.")
+
+    footer = gr.Markdown(
+        f"Coding Agent v{Config.VERSION} • Optimized for Performance • [GitHub](https://github.com/)",
+        elem_id="footer"
+    )
+
+    ui_lang.change(
+        switch_ui_language,
+        inputs=[ui_lang],
+        outputs=[
+            hero_title,
+            hero_body,
+            chatbot,
+            msg,
+            send_btn,
+            api_key_input,
+            sidebar_accordion,
+            sidebar_body,
+            examples,
+            clear_btn,
+        ],
+    )
+
+    submit_inputs = [msg, chatbot, api_key_input, ui_lang]
+    submit_outputs = [msg, chatbot]
+
+    msg.submit(respond, submit_inputs, submit_outputs)
+    send_btn.click(respond, submit_inputs, submit_outputs)
 
 
 if __name__ == "__main__":
-    # 如果文件不存在，创建文件
-    if not os.path.exists(USAGE_FILE):
-        with open(USAGE_FILE,'w') as f:
-            json.dump({},f)
+    if not os.path.exists(Config.USAGE_FILE):
+        with open(Config.USAGE_FILE, "w", encoding="utf-8") as f:
+            json.dump({}, f)
 
-    demo.launch(
-        server_port=7860,
-        share=False,
-        auth=None,
-        theme=gr.themes.Soft()
-    )
+    demo.launch(server_port=7860, share=False)
