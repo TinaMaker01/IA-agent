@@ -1,38 +1,69 @@
+"""Build the local Chroma vector store from files in ./knowledge."""
+
 import os
-from langchain_community.document_loaders import DirectoryLoader,TextLoader
+import logging
+from typing import List
+from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import chroma
+from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings
 
-# 加载知识库
-loader = DirectoryLoader(
-    r"D:\Vscode\ai\knowledge",
-    glob = "**/*.txt",   #加载目标知识库文件夹中的所有文本文件
-    loader_cls = TextLoader,
-    loader_kwargs = {"encoding":'utf-8'}
-)
-docs = loader.load()
-print(f"加载了{len(docs)}个文档")
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# 文档切分（chunk)
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size = 500,   #每块字符
-    chunk_overlap = 50,   #重叠字符串数量
-    separators = ['\n\n','\n',',','。','!']
-)
-chunks = text_splitter.split_documents(docs)
-print(f"切分为{len(chunks)}个块")
+# Constants
+KNOWLEDGE_DIR = os.path.join(os.path.dirname(__file__), "knowledge")
+PERSIST_DIR = os.path.join(os.path.dirname(__file__), "chromadb")
+BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+EMBEDDING_MODEL = "text-embedding-v3"
 
-embeddings = OpenAIEmbeddings(
-    model = 'text-embedding-v3',
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-)
+def build_vector_store() -> None:
+    """Load documents, split them into chunks, and save to a Chroma vector store."""
+    if not os.path.exists(KNOWLEDGE_DIR):
+        logger.error(f"Knowledge directory not found: {KNOWLEDGE_DIR}")
+        return
 
-# 创建向量数据库并持久化到本地目录
-vectorstore = chroma.Chroma.from_documents(
-    documents = chunks,
-    embedding = embeddings,
-    persist_directory = './chromadb'   #保存在本地文件夹
-)
-print("向量数据库已构建完成，保存在./chromadb 中")
+    logger.info(f"Loading documents from {KNOWLEDGE_DIR}...")
+    loader = DirectoryLoader(
+        KNOWLEDGE_DIR,
+        glob="**/*.txt",
+        loader_cls=TextLoader,
+        loader_kwargs={"encoding": "utf-8"},
+    )
+    docs = loader.load()
+    logger.info(f"Loaded {len(docs)} document(s)")
 
+    if not docs:
+        logger.warning("No documents found to process.")
+        return
+
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=500,
+        chunk_overlap=50,
+        separators=["\n\n", "\n", ",", ".", "!", "?"],
+    )
+    chunks = text_splitter.split_documents(docs)
+    logger.info(f"Split into {len(chunks)} chunk(s)")
+
+    api_key = os.getenv("DASHSCOPE_API_KEY")
+    if not api_key:
+        logger.error("DASHSCOPE_API_KEY environment variable is not set.")
+        return
+
+    embeddings = OpenAIEmbeddings(
+        model=EMBEDDING_MODEL,
+        base_url=BASE_URL,
+        api_key=api_key,
+    )
+
+    logger.info(f"Creating vector store in {PERSIST_DIR}...")
+    vectorstore = Chroma.from_documents(
+        documents=chunks,
+        embedding=embeddings,
+        persist_directory=PERSIST_DIR,
+    )
+    logger.info("Vector store saved successfully.")
+
+if __name__ == "__main__":
+    build_vector_store()
