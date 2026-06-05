@@ -37,14 +37,27 @@ A professional, provider-agnostic, and multilingual (English/French) programming
     cd coding-agent
     ```
 
-2.  **Install dependencies**:
+2.  **Set up a virtual environment** (Recommended):
     ```bash
+    # Windows
+    python -m venv venv
+    .\venv\Scripts\activate
+
+    # macOS/Linux
+    python3 -m venv venv
+    source venv/bin/activate
+    ```
+
+3.  **Install dependencies**:
+    ```bash
+    pip install --upgrade pip
     pip install -r requirements.txt
     ```
 
-3.  **Set up environment variables (Optional)**:
-    You can set a default backend key:
+4.  **Set up environment variables** (Optional):
+    You can set a default API key for the backend (fallback for the free tier). Create a `.env` file or export it directly:
     ```bash
+    # Example for DashScope (default provider)
     export DASHSCOPE_API_KEY="your-api-key-here"
     ```
 
