@@ -5,7 +5,8 @@ A professional, provider-agnostic, and multilingual (English/French) programming
 ## Key Features
 
 - **Expert Programming Assistance**: Optimized for Python development with real-time word-by-word streaming.
-- **Provider Agnostic**: Works with **any OpenAI-compatible API** (DashScope, OpenAI, DeepSeek, Groq, etc.) via dynamic UI configuration.
+- **Universal Token Support**: Works with **any API key** from any OpenAI-compatible website or provider (OpenAI, DeepSeek, Groq, Together, etc.).
+- **Provider Agnostic**: Fully configurable API Base URL and Model Name via the dynamic UI.
 - **Advanced RAG (Knowledge Base)**: Searches local documents in `./knowledge` via `ChromaDB`. Supports custom embedding models.
 - **Secure Python Execution**: Runs Python code snippets directly from the chat interface with integrated security guardrails.
 - **Modern UI/UX**: Redesigned in June 2026 with a premium "Glassmorphism" aesthetic, async feedback loops, and interactive tool logs.
