@@ -30,6 +30,7 @@ ENV/
 total_usage.json
 chromadb/
 knowledge/
+dev/
 .env
 *.log
 
