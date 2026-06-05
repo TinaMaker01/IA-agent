@@ -223,7 +223,9 @@ def check_free_quota(ip: str, ui_lang: str) -> Tuple[bool, str]:
 _CLIENT_CACHE: Dict[str, Any] = {}
 
 def get_cached_client(api_key: str, client_type: str, **kwargs) -> Any:
-    cache_key = f"{client_type}_{api_key}"
+    # Include all relevant kwargs in the cache key to handle different models/URLs
+    kwargs_str = json.dumps(kwargs, sort_keys=True)
+    cache_key = f"{client_type}_{api_key}_{kwargs_str}"
     if cache_key not in _CLIENT_CACHE:
         if client_type == "llm":
             _CLIENT_CACHE[cache_key] = ChatOpenAI(
@@ -270,12 +272,12 @@ def execute_python_code(code: str) -> str:
             pass
 
 
-def get_vectorstore(api_key: str):
+def get_vectorstore(api_key: str, base_url: str, embed_model: str):
     embeddings = get_cached_client(
         api_key=api_key,
         client_type="embeddings",
-        model=Config.EMBEDDING_MODEL,
-        base_url=Config.BASE_URL,
+        model=embed_model,
+        base_url=base_url,
     )
     return Chroma(
         persist_directory=Config.PERSIST_DIRECTORY,
@@ -283,43 +285,51 @@ def get_vectorstore(api_key: str):
     )
 
 
-@tool
-def search_knowledge(query: str) -> str:
-    """Search the local knowledge base for material relevant to the question."""
-    if isinstance(query, dict):
-        query = query.get("query") or query.get("input") or str(query)
-    if not isinstance(query, str) or not query.strip():
-        return "Empty query — nothing to search."
+def create_search_knowledge_tool(api_key: str, base_url: str, embed_model: str):
+    """Creates a configured search_knowledge tool."""
     
-    try:
-        # Note: In a production app, we'd use the current user's API key here.
-        # For simplicity, we use the backend key if available, or the user's key if provided.
-        # This is a bit tricky with @tool since it doesn't easily take extra context.
-        # We'll stick to the default vectorstore for now or initialize it on the fly.
-        vs = get_vectorstore(Config.DASHSCOPE_API_KEY or "dummy")
-        docs = vs.similarity_search(query, k=2)
-        if not docs:
-            return "No relevant information found."
-        results = "\n\n---\n\n".join(doc.page_content for doc in docs)
-        return f"Knowledge base results:\n\n{results}"
-    except Exception as e:
-        logger.error(f"Search knowledge error: {e}")
-        return f"[ERROR] Failed to search knowledge base: {str(e)}"
+    @tool
+    def search_knowledge(query: str) -> str:
+        """Search the local knowledge base for material relevant to the question."""
+        if isinstance(query, dict):
+            query = query.get("query") or query.get("input") or str(query)
+        if not isinstance(query, str) or not query.strip():
+            return "Empty query — nothing to search."
+        
+        try:
+            vs = get_vectorstore(api_key, base_url, embed_model)
+            docs = vs.similarity_search(query, k=2)
+            if not docs:
+                return "No relevant information found."
+            results = "\n\n---\n\n".join(doc.page_content for doc in docs)
+            return f"Knowledge base results:\n\n{results}"
+        except Exception as e:
+            logger.error(f"Search knowledge error: {e}")
+            return f"[ERROR] Failed to search knowledge base: {str(e)}"
+    
+    return search_knowledge
 
 
-def build_agent_executor(api_key: str, ui_lang: str) -> AgentExecutor:
+def build_agent_executor(
+    api_key: str, 
+    ui_lang: str, 
+    base_url: str, 
+    model_name: str, 
+    embed_model: str
+) -> AgentExecutor:
     """Build the LangChain AgentExecutor with the modern tools agent pattern."""
     lang = ui_lang if ui_lang in SUPPORTED_UI_LANGS else "en"
     llm = get_cached_client(
         api_key=api_key,
         client_type="llm",
-        model=Config.MODEL,
-        base_url=Config.BASE_URL,
+        model=model_name,
+        base_url=base_url,
         temperature=0,
-        streaming=True, # Enable streaming
+        streaming=True,
     )
     
-    tools = [execute_python_code, search_knowledge]
+    search_tool = create_search_knowledge_tool(api_key, base_url, embed_model)
+    tools = [execute_python_code, search_tool]
     prompt = ChatPromptTemplate.from_messages([
         ("system", SYSTEM_PROMPTS[lang]),
         MessagesPlaceholder(variable_name="chat_history"),
@@ -336,11 +346,15 @@ async def chat_with_agent_stream(
     history: List[Dict[str, str]],
     user_api_key: str,
     ui_lang: str,
+    base_url: str,
+    model_name: str,
+    embed_model: str,
     request: gr.Request,
 ):
     usage_mode = "free"
     quota_msg = ""
 
+    # Determine which API Key to use
     if user_api_key and user_api_key.strip():
         api_key_to_use = user_api_key.strip()
         usage_mode = "paid"
@@ -358,8 +372,19 @@ async def chat_with_agent_stream(
          yield "Error: No API Key provided and backend key is missing."
          return
 
+    # Use provided overrides or defaults
+    final_base_url = base_url.strip() if base_url and base_url.strip() else Config.BASE_URL
+    final_model_name = model_name.strip() if model_name and model_name.strip() else Config.MODEL
+    final_embed_model = embed_model.strip() if embed_model and embed_model.strip() else Config.EMBEDDING_MODEL
+
     try:
-        agent_executor = build_agent_executor(api_key_to_use, ui_lang)
+        agent_executor = build_agent_executor(
+            api_key_to_use, 
+            ui_lang, 
+            final_base_url, 
+            final_model_name, 
+            final_embed_model
+        )
     except Exception as e:
         logger.error(f"Agent building error: {e}")
         yield t(ui_lang, "api_key_invalid", error=str(e))
@@ -400,7 +425,16 @@ def reject_message(ui_lang: str, reason: Optional[str]) -> str:
     return t(ui_lang, "lang_reject_other", detected=reason or "unknown")
 
 
-async def respond(message: str, history: List[Dict[str, str]], api_key: str, ui_lang: str, request: gr.Request):
+async def respond(
+    message: str, 
+    history: List[Dict[str, str]], 
+    api_key: str, 
+    ui_lang: str, 
+    base_url: str,
+    model_name: str,
+    embed_model: str,
+    request: gr.Request
+):
     history = history or []
     if not message or not str(message).strip():
         yield "", history
@@ -418,7 +452,16 @@ async def respond(message: str, history: List[Dict[str, str]], api_key: str, ui_
     history.append({"role": "assistant", "content": ""})
     yield "", history
 
-    async for chunk in chat_with_agent_stream(message, history[:-2], api_key, ui_lang, request):
+    async for chunk in chat_with_agent_stream(
+        message, 
+        history[:-2], 
+        api_key, 
+        ui_lang, 
+        base_url, 
+        model_name, 
+        embed_model, 
+        request
+    ):
         history[-1]["content"] = chunk
         yield "", history
 
@@ -442,6 +485,10 @@ def switch_ui_language(lang: str):
         gr.update(value=STRINGS[lang]["sidebar_body"]),
         gr.update(label=STRINGS[lang]["examples_label"], samples=EXAMPLES[lang]),
         gr.update(value=STRINGS[lang]["clear_btn"]),
+        gr.update(label=STRINGS[lang]["adv_settings_title"]),
+        gr.update(label=STRINGS[lang]["base_url_label"]),
+        gr.update(label=STRINGS[lang]["model_name_label"]),
+        gr.update(label=STRINGS[lang]["embed_model_label"]),
     )
 
 
@@ -530,6 +577,23 @@ with gr.Blocks(
                     placeholder=STRINGS["en"]["api_key_placeholder"],
                     info=STRINGS["en"]["api_key_info"],
                 )
+                
+                with gr.Accordion(STRINGS["en"]["adv_settings_title"], open=False) as adv_settings:
+                    base_url_input = gr.Textbox(
+                        label=STRINGS["en"]["base_url_label"],
+                        placeholder=Config.BASE_URL,
+                        value=Config.BASE_URL
+                    )
+                    model_name_input = gr.Textbox(
+                        label=STRINGS["en"]["model_name_label"],
+                        placeholder=Config.MODEL,
+                        value=Config.MODEL
+                    )
+                    embed_model_input = gr.Textbox(
+                        label=STRINGS["en"]["embed_model_label"],
+                        placeholder=Config.EMBEDDING_MODEL,
+                        value=Config.EMBEDDING_MODEL
+                    )
             
             sidebar_accordion = gr.Accordion(STRINGS["en"]["sidebar_title"], open=True)
             with sidebar_accordion:
@@ -558,10 +622,22 @@ with gr.Blocks(
             sidebar_body,
             examples,
             clear_btn,
+            adv_settings,
+            base_url_input,
+            model_name_input,
+            embed_model_input,
         ],
     )
 
-    submit_inputs = [msg, chatbot, api_key_input, ui_lang]
+    submit_inputs = [
+        msg, 
+        chatbot, 
+        api_key_input, 
+        ui_lang, 
+        base_url_input, 
+        model_name_input, 
+        embed_model_input
+    ]
     submit_outputs = [msg, chatbot]
 
     msg.submit(respond, submit_inputs, submit_outputs)

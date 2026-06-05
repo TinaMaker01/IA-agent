@@ -8,16 +8,16 @@ STRINGS: dict[str, dict[str, str]] = {
         "hero_title": "# Coding Agent",
         "hero_body": (
             "I can run Python code, answer programming questions, and search your local knowledge base.\n\n"
-            "**Free tier:** 10 lifetime requests per IP. After that, add your DashScope API key to continue."
+            "**Free tier:** 10 lifetime requests per IP. After that, add your own API key to continue."
         ),
         "chat_label": "Conversation",
         "input_label": "Your message",
         "input_placeholder": "e.g. Write a quicksort function in Python",
         "send_btn": "Send",
         "clear_btn": "Clear chat",
-        "api_key_label": "DashScope API Key (optional)",
-        "api_key_placeholder": "sk-... Leave empty to use the 10 free requests",
-        "api_key_info": "Get a key: https://bailian.console.aliyun.com/",
+        "api_key_label": "API Key (optional)",
+        "api_key_placeholder": "Paste your API key here...",
+        "api_key_info": "Works with OpenAI, DashScope, DeepSeek, Groq, etc.",
         "sidebar_title": "### How it works",
         "sidebar_body": (
             "- 10 free lifetime requests per IP address\n"
@@ -30,7 +30,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "quota_paid": "Using your API key — unlimited requests.",
         "quota_free": "Free requests remaining: {remaining}/10 (lifetime, per IP).",
         "quota_exhausted": (
-            "Your 10 free requests are used up. Enter your DashScope API key in the sidebar to continue."
+            "Your 10 free requests are used up. Enter an API key in the sidebar to continue."
         ),
         "api_key_invalid": "Invalid API key or network error: {error}",
         "agent_error": "Sorry, something went wrong while processing your request: {error}",
@@ -43,6 +43,10 @@ STRINGS: dict[str, dict[str, str]] = {
             "Detected language: `{detected}`. Please use English or French."
         ),
         "examples_label": "Try an example",
+        "adv_settings_title": "⚙️ Advanced API Settings",
+        "base_url_label": "API Base URL",
+        "model_name_label": "LLM Model Name",
+        "embed_model_label": "Embedding Model Name",
     },
     "fr": {
         "page_title": "Agent de programmation",
@@ -50,16 +54,16 @@ STRINGS: dict[str, dict[str, str]] = {
         "hero_body": (
             "Je peux exécuter du code Python, répondre à des questions de programmation "
             "et interroger votre base de connaissances locale.\n\n"
-            "**Offre gratuite :** 10 requêtes à vie par adresse IP. Ensuite, ajoutez votre clé API DashScope."
+            "**Offre gratuite :** 10 requêtes à vie par adresse IP. Ensuite, ajoutez votre propre clé API."
         ),
         "chat_label": "Conversation",
         "input_label": "Votre message",
         "input_placeholder": "ex. Écris une fonction de tri rapide en Python",
         "send_btn": "Envoyer",
         "clear_btn": "Effacer la conversation",
-        "api_key_label": "Clé API DashScope (facultatif)",
-        "api_key_placeholder": "sk-... Laissez vide pour les 10 requêtes gratuites",
-        "api_key_info": "Obtenir une clé : https://bailian.console.aliyun.com/",
+        "api_key_label": "Clé API (facultatif)",
+        "api_key_placeholder": "Collez votre clé API ici...",
+        "api_key_info": "Compatible avec OpenAI, DashScope, DeepSeek, Groq, etc.",
         "sidebar_title": "### Mode d'emploi",
         "sidebar_body": (
             "- 10 requêtes gratuites à vie par adresse IP\n"
@@ -73,7 +77,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "quota_free": "Requêtes gratuites restantes : {remaining}/10 (à vie, par IP).",
         "quota_exhausted": (
             "Vos 10 requêtes gratuites sont épuisées. "
-            "Saisissez votre clé API DashScope dans le panneau latéral pour continuer."
+            "Saisissez une clé API dans le panneau latéral pour continuer."
         ),
         "api_key_invalid": "Clé API invalide ou erreur réseau : {error}",
         "agent_error": "Désolé, une erreur s'est produite : {error}",
@@ -86,6 +90,10 @@ STRINGS: dict[str, dict[str, str]] = {
             "Langue détectée : `{detected}`. Utilisez l'anglais ou le français."
         ),
         "examples_label": "Exemples",
+        "adv_settings_title": "⚙️ Paramètres API avancés",
+        "base_url_label": "URL de base de l'API",
+        "model_name_label": "Nom du modèle LLM",
+        "embed_model_label": "Nom du modèle d'embedding",
     },
 }
 
